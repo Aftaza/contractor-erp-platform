@@ -1,0 +1,702 @@
+// Skema database Acme ERP v2 (SRS §6). Ubah lewat migration baru di
+// prisma/migrations, expand-only (REL-6); hanya pemegang kunci skema (TODO.md §2.3).
+// CHECK constraint, indeks parsial & trigger (total, agregasi progress, audit,
+// purchase_lines) ditulis tangan di SQL migration — Prisma DSL tak bisa menyatakannya.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enum — merepresentasikan CHECK (... IN (...)) di master §4 sebagai tipe
+// enum native Postgres. Setara secara integritas, lebih idiomatis di Prisma.
+// ---------------------------------------------------------------------------
+
+enum Role {
+  pimpinan
+  admin
+  staff_gudang
+}
+
+enum ProjectStatus {
+  Aktif
+  Selesai
+  Ditunda
+  Dibatalkan
+}
+
+enum ContractType {
+  kontrak_payung
+  one_time
+}
+
+enum RabStatus {
+  draft
+  approved
+}
+
+enum PublicCategory {
+  Industri
+  Infrastruktur
+  Sipil
+  Gedung
+}
+
+enum NodeType {
+  section
+  subgroup
+  phase
+  item
+}
+
+enum TerminType {
+  dp
+  termin
+  pelunasan
+  retensi
+}
+
+enum TerminStatus {
+  Lunas
+  BelumBayar @map("Belum Bayar")
+  Terlambat
+  Sebagian
+}
+
+enum ExpenseCategory {
+  material
+  upah
+  transport
+  overhead
+  sewa_alat
+  lain_lain
+}
+
+enum ToolStatus {
+  tersedia
+  dipakai
+  maintenance
+  rusak
+}
+
+// Status alur pemakaian alat (FR-MD-3/4): pending → approved | rejected | cancelled → handed_over → returned
+enum ProjectToolApprovalStatus {
+  pending
+  approved
+  rejected
+  cancelled
+  handed_over
+  returned
+}
+
+enum DocumentCategory {
+  tender
+  kontrak
+  bast
+  invoice
+  k3
+  gambar
+  legalitas
+  lainnya
+  bukti
+}
+
+enum NotificationType {
+  info
+  warning
+  success
+  danger
+}
+
+// ---------------------------------------------------------------------------
+// 4.1 Users & auth
+// ---------------------------------------------------------------------------
+
+model User {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email              String    @unique
+  passwordHash       String    @map("password_hash")
+  fullName           String    @map("full_name")
+  role               Role
+  isActive           Boolean   @default(true) @map("is_active")
+  mustChangePassword Boolean   @default(true) @map("must_change_password")
+  // lockout bertahap FR-AUTH-5
+  failedLoginCount   Int       @default(0) @map("failed_login_count")
+  lockedUntil        DateTime? @map("locked_until") @db.Timestamptz
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  refreshTokens          RefreshToken[]
+  createdProjects        Project[]         @relation("ProjectCreatedBy")
+  rabApprovedProjects    Project[]         @relation("ProjectRabApprovedBy")
+  createdClients         Client[]
+  createdVendors         Vendor[]
+  createdTermins         Termin[]
+  recordedExpenses       Expense[]
+  createdTools           Tool[]
+  projectToolsApproved   ProjectTool[]     @relation("ProjectToolApprovedBy")
+  projectToolsRecorded   ProjectTool[]     @relation("ProjectToolRecordedBy")
+  projectToolsRequested  ProjectTool[]     @relation("ProjectToolRequestedBy")
+  projectToolsHandedOver ProjectTool[]     @relation("ProjectToolHandedOverBy")
+  projectToolsReturned   ProjectTool[]     @relation("ProjectToolReturnedBy")
+  notifications          Notification[]
+  auditLogs              AuditLog[]
+  terminPayments         TerminPayment[]
+  purchaseNotes          PurchaseNote[]
+  documents              Document[]
+  rabProgressLogs        RabProgressLog[]
+  rabVersions            RabVersion[]
+  projectAddenda         ProjectAddendum[]
+  settings               Setting[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @map("token_hash")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// 4.7 Tabel pendukung yang dipertahankan (FK diarahkan ke users)
+// ---------------------------------------------------------------------------
+
+model Client {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name        String
+  sector      String?
+  contactName String?   @map("contact_name")
+  phone       String?
+  email       String?
+  address     String?
+  notes       String?
+  // kode singkat untuk kode proyek (FR-MD-1, FR-PRJ-3); CHECK ^[A-Z0-9]{2,6}$ di migration
+  code        String?   @unique
+  // publikasi logo di situs (FR-INT-2)
+  isPublic    Boolean   @default(false) @map("is_public")
+  logoPath    String?   @map("logo_path")
+  createdBy   String?   @map("created_by") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  // soft delete FR-DEL-1. deleted_by tanpa FK: users tak pernah dihapus keras (is_active)
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz
+  deletedBy   String?   @map("deleted_by") @db.Uuid
+
+  creator  User?     @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+  projects Project[]
+
+  @@map("clients")
+}
+
+model Vendor {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name        String
+  category    String?
+  contactName String?  @map("contact_name")
+  phone       String?
+  email       String?
+  address     String?
+  notes       String?
+  createdBy   String?  @map("created_by") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz
+  deletedBy String?   @map("deleted_by") @db.Uuid
+
+  creator       User?          @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+  rabNodes      RabNode[]
+  expenses      Expense[]
+  purchaseNotes PurchaseNote[]
+
+  @@map("vendors")
+}
+
+// ---------------------------------------------------------------------------
+// 4.2 Projects
+// ---------------------------------------------------------------------------
+
+model Project {
+  id                   String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                 String
+  clientId             String?         @map("client_id") @db.Uuid
+  location             String
+  contractType         ContractType    @map("contract_type")
+  status               ProjectStatus
+  progress             Decimal         @default(0) @db.Decimal
+  contractValue        BigInt?         @map("contract_value")
+  startDate            DateTime        @map("start_date") @db.Date
+  endDate              DateTime?       @map("end_date") @db.Date
+  description          String?
+  ppnEnabled           Boolean         @default(false) @map("ppn_enabled")
+  ppnRate              Decimal         @default(11) @map("ppn_rate") @db.Decimal
+  rabStatus            RabStatus       @default(draft) @map("rab_status")
+  rabApprovedBy        String?         @map("rab_approved_by") @db.Uuid
+  rabApprovedAt        DateTime?       @map("rab_approved_at") @db.Timestamptz
+  // publikasi situs (master §7) — field publik terpisah dari data internal
+  isPublished          Boolean         @default(false) @map("is_published")
+  publicTitle          String?         @map("public_title")
+  publicSummary        String?         @map("public_summary")
+  publicCategory       PublicCategory? @map("public_category")
+  // shortcut: masih text[]; jadi jsonb [{path, alt, sort}] (FR-PUB-2) bersama kodenya di W1-12 — ganti tipe di sini memutus versi app lama (REL-6)
+  publicImages         String[]        @default([]) @map("public_images")
+  publicSlug           String?         @unique @map("public_slug")
+  // kode proyek FR-PRJ-3: diisi API saat dibuat (W1-16), tak bisa diubah; nullable sampai backfill
+  code                 String?         @unique
+  // sub-proyek kontrak payung FR-PRJ-6 (satu tingkat — divalidasi API)
+  parentId             String?         @map("parent_id") @db.Uuid
+  // sub-proyek: periode & nilai SPK = start_date/end_date/contract_value baris ini (FR-PRJ-6)
+  periodLabel          String?         @map("period_label") // nama periode / nomor SPK
+  subProjectSeq        Int             @default(0) @map("sub_project_seq") // penghitung NNNN sub-proyek, tak pernah turun
+  // siklus & addendum (FR-PRJ-4/5, FR-NTF-2)
+  statusReason         String?         @map("status_reason")
+  actualEndDate        DateTime?       @map("actual_end_date") @db.Date
+  contractValueInitial BigInt?         @map("contract_value_initial")
+  reviewRequestedAt    DateTime?       @map("review_requested_at") @db.Timestamptz
+  createdBy            String?         @map("created_by") @db.Uuid
+  createdAt            DateTime        @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt            DateTime        @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt            DateTime?       @map("deleted_at") @db.Timestamptz
+  deletedBy            String?         @map("deleted_by") @db.Uuid
+
+  client      Client?   @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  rabApprover User?     @relation("ProjectRabApprovedBy", fields: [rabApprovedBy], references: [id], onDelete: SetNull)
+  creator     User?     @relation("ProjectCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  parent      Project?  @relation("ProjectSubProjects", fields: [parentId], references: [id], onDelete: Restrict)
+  subProjects Project[] @relation("ProjectSubProjects")
+
+  rabNodes          RabNode[]
+  termins           Termin[]
+  expenses          Expense[]
+  projectTools      ProjectTool[]
+  purchaseNotes     PurchaseNote[]
+  documents         Document[]
+  progressSnapshots ProjectProgressSnapshot[]
+  rabVersions       RabVersion[]
+  addenda           ProjectAddendum[]
+
+  @@index([parentId], map: "projects_parent_idx")
+  @@map("projects")
+}
+
+// ---------------------------------------------------------------------------
+// 4.3 rab_nodes — pohon RAB = Milestone
+// ---------------------------------------------------------------------------
+
+model RabNode {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId       String    @map("project_id") @db.Uuid
+  parentId        String?   @map("parent_id") @db.Uuid
+  nodeType        NodeType  @map("node_type")
+  name            String
+  sortOrder       Int       @default(0) @map("sort_order")
+  // item-only (NULL untuk node grup) — divalidasi CHECK/trigger di WP-02
+  volume          Decimal?  @db.Decimal
+  unit            String?
+  materialPrice   BigInt?   @map("material_price")
+  laborPrice      BigInt?   @map("labor_price")
+  total           BigInt? // = (material+labor)*volume, di-set trigger (WP-02)
+  progressPercent Decimal   @default(0) @map("progress_percent") @db.Decimal
+  // pembelian
+  isPurchased     Boolean   @default(false) @map("is_purchased")
+  purchasedAmount BigInt?   @map("purchased_amount")
+  purchasedDate   DateTime? @map("purchased_date") @db.Date
+  vendorId        String?   @map("vendor_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz
+  deletedBy       String?   @map("deleted_by") @db.Uuid
+
+  project       Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  parent        RabNode?         @relation("RabNodeChildren", fields: [parentId], references: [id], onDelete: Cascade)
+  children      RabNode[]        @relation("RabNodeChildren")
+  vendor        Vendor?          @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  purchaseLines PurchaseLine[]
+  progressLogs  RabProgressLog[]
+
+  @@index([projectId], map: "rab_nodes_project_idx")
+  @@index([parentId], map: "rab_nodes_parent_idx")
+  @@map("rab_nodes")
+}
+
+// ---------------------------------------------------------------------------
+// 4.5 Keuangan
+// ---------------------------------------------------------------------------
+
+model Termin {
+  id        String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId String       @map("project_id") @db.Uuid
+  name      String
+  type      TerminType
+  amount    BigInt
+  status    TerminStatus
+  dueDate   DateTime?    @map("due_date") @db.Date
+  paidDate  DateTime?    @map("paid_date") @db.Date
+  notes     String?
+  createdBy String?      @map("created_by") @db.Uuid
+  createdAt DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt DateTime?    @map("deleted_at") @db.Timestamptz
+  deletedBy String?      @map("deleted_by") @db.Uuid
+
+  project  Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  creator  User?           @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+  payments TerminPayment[]
+
+  @@map("termins")
+}
+
+/// Dihidupkan kembali (revisi 2026-07-15b master plan) — biaya di luar RAB.
+model Expense {
+  id                String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId         String          @map("project_id") @db.Uuid
+  description       String
+  amount            BigInt // CHECK (amount > 0) ditambahkan WP-02
+  expenseDate       DateTime        @map("expense_date") @db.Date
+  category          ExpenseCategory
+  vendorId          String?         @map("vendor_id") @db.Uuid
+  receiptUrl        String?         @map("receipt_url") // digantikan receipt_document_id; dihapus di rilis berikutnya (REL-6)
+  receiptDocumentId String?         @map("receipt_document_id") @db.Uuid
+  notes             String?
+  recordedBy        String?         @map("recorded_by") @db.Uuid
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime        @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt         DateTime?       @map("deleted_at") @db.Timestamptz
+  deletedBy         String?         @map("deleted_by") @db.Uuid
+
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  vendor          Vendor?   @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  recorder        User?     @relation(fields: [recordedBy], references: [id], onDelete: SetNull)
+  receiptDocument Document? @relation(fields: [receiptDocumentId], references: [id], onDelete: SetNull)
+
+  @@index([projectId], map: "expenses_project_idx")
+  @@map("expenses")
+}
+
+// ---------------------------------------------------------------------------
+// 4.6 Alat Gudang
+// ---------------------------------------------------------------------------
+
+model Tool {
+  id        String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  // unik hanya di baris aktif: indeks parsial tools_code_active_key (FR-DEL-5) di migration — Prisma 6 tak bisa menyatakannya
+  code      String?
+  name      String
+  category  String?
+  quantity  Int        @default(1)
+  condition String?
+  status    ToolStatus @default(tersedia)
+  notes     String?
+  createdBy String?    @map("created_by") @db.Uuid
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt DateTime?  @map("deleted_at") @db.Timestamptz
+  deletedBy String?    @map("deleted_by") @db.Uuid
+
+  creator      User?         @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+  projectTools ProjectTool[]
+
+  @@map("tools")
+}
+
+model ProjectTool {
+  id                String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId         String                    @map("project_id") @db.Uuid
+  toolId            String                    @map("tool_id") @db.Uuid
+  quantity          Int                       @default(1)
+  usedFrom          DateTime?                 @map("used_from") @db.Date
+  usedTo            DateTime?                 @map("used_to") @db.Date
+  approvalStatus    ProjectToolApprovalStatus @default(pending) @map("approval_status")
+  approvedBy        String?                   @map("approved_by") @db.Uuid
+  approvedAt        DateTime?                 @map("approved_at") @db.Timestamptz
+  recordedBy        String?                   @map("recorded_by") @db.Uuid
+  notes             String?
+  // alur pengajuan & serah terima FR-MD-3/4
+  requestedBy       String?                   @map("requested_by") @db.Uuid
+  rejectReason      String?                   @map("reject_reason")
+  handedOverAt      DateTime?                 @map("handed_over_at") @db.Timestamptz
+  handedOverBy      String?                   @map("handed_over_by") @db.Uuid
+  handedOverTo      String?                   @map("handed_over_to") // nama penerima di lapangan (FR-MD-4)
+  handoverCondition String?                   @map("handover_condition")
+  returnedAt        DateTime?                 @map("returned_at") @db.Timestamptz
+  returnedBy        String?                   @map("returned_by") @db.Uuid
+  returnCondition   String?                   @map("return_condition")
+  createdAt         DateTime                  @default(now()) @map("created_at") @db.Timestamptz
+
+  project    Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tool       Tool    @relation(fields: [toolId], references: [id])
+  approver   User?   @relation("ProjectToolApprovedBy", fields: [approvedBy], references: [id], onDelete: SetNull)
+  recorder   User?   @relation("ProjectToolRecordedBy", fields: [recordedBy], references: [id], onDelete: SetNull)
+  requester  User?   @relation("ProjectToolRequestedBy", fields: [requestedBy], references: [id], onDelete: SetNull)
+  handedOver User?   @relation("ProjectToolHandedOverBy", fields: [handedOverBy], references: [id], onDelete: SetNull)
+  returner   User?   @relation("ProjectToolReturnedBy", fields: [returnedBy], references: [id], onDelete: SetNull)
+
+  @@map("project_tools")
+}
+
+// ---------------------------------------------------------------------------
+// Notifikasi & audit
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id         String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId     String           @map("user_id") @db.Uuid
+  // `type` & `is_read` digantikan `severity` & `read_at` (FR-NTF-3); dihapus setelah W1-03 tak memakainya (REL-6)
+  type       NotificationType
+  title      String
+  message    String
+  isRead     Boolean          @default(false) @map("is_read")
+  link       String?
+  event      String? // kode katalog FR-NTF-1
+  severity   NotificationType @default(info)
+  entityType String?          @map("entity_type")
+  entityId   String?          @map("entity_id") @db.Uuid
+  readAt     DateTime?        @map("read_at") @db.Timestamptz
+  createdAt  DateTime         @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt], map: "notifications_user_read_idx")
+  @@map("notifications")
+}
+
+model AuditLog {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String?  @map("user_id") @db.Uuid
+  userEmail String?  @map("user_email")
+  userRole  String?  @map("user_role")
+  action    String
+  tableName String?  @map("table_name")
+  recordId  String?  @map("record_id") @db.Uuid
+  oldData   Json?    @map("old_data")
+  newData   Json?    @map("new_data")
+  ipAddress String?  @map("ip_address")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId], map: "audit_logs_user_id_idx")
+  @@index([tableName], map: "audit_logs_table_name_idx")
+  @@index([createdAt], map: "audit_logs_created_at_idx")
+  @@map("audit_logs")
+}
+
+// ---------------------------------------------------------------------------
+// Gelombang 1 (SRS §6 "Tambahan") — semua tabel di bawah punya trigger audit.
+// ---------------------------------------------------------------------------
+
+// FK RESTRICT (termin_payments, purchase_*, rab_versions, projects.parent_id): kode lama
+// masih hard delete sampai W1-01 dan rollback REL-6 ke image lama tak boleh menghapus data uang.
+
+/// Pembayaran per termin, boleh cicilan (FR-FIN-1). Nominal DPP.
+model TerminPayment {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  terminId          String    @map("termin_id") @db.Uuid
+  paymentDate       DateTime  @map("payment_date") @db.Date
+  amount            BigInt // CHECK > 0 di migration
+  receiptDocumentId String?   @map("receipt_document_id") @db.Uuid
+  notes             String?
+  recordedBy        String?   @map("recorded_by") @db.Uuid
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt         DateTime? @map("deleted_at") @db.Timestamptz
+  deletedBy         String?   @map("deleted_by") @db.Uuid
+
+  termin          Termin    @relation(fields: [terminId], references: [id], onDelete: Restrict)
+  receiptDocument Document? @relation(fields: [receiptDocumentId], references: [id], onDelete: SetNull)
+  recorder        User?     @relation(fields: [recordedBy], references: [id], onDelete: SetNull)
+
+  @@index([terminId], map: "termin_payments_termin_idx")
+  @@map("termin_payments")
+}
+
+/// Nota pembelian (FR-FIN-3) — menggantikan kolom pembelian di rab_nodes.
+model PurchaseNote {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId         String    @map("project_id") @db.Uuid
+  vendorId          String?   @map("vendor_id") @db.Uuid
+  noteNumber        String?   @map("note_number")
+  noteDate          DateTime  @map("note_date") @db.Date
+  receiptDocumentId String?   @map("receipt_document_id") @db.Uuid
+  notes             String?
+  recordedBy        String?   @map("recorded_by") @db.Uuid
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt         DateTime? @map("deleted_at") @db.Timestamptz
+  deletedBy         String?   @map("deleted_by") @db.Uuid
+
+  project         Project        @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  vendor          Vendor?        @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  receiptDocument Document?      @relation(fields: [receiptDocumentId], references: [id], onDelete: SetNull)
+  recorder        User?          @relation(fields: [recordedBy], references: [id], onDelete: SetNull)
+  lines           PurchaseLine[]
+
+  @@index([projectId], map: "purchase_notes_project_idx")
+  @@map("purchase_notes")
+}
+
+/// Baris nota: node `item` dari proyek yang sama (trigger), subtotal di-set DB.
+model PurchaseLine {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  purchaseNoteId String    @map("purchase_note_id") @db.Uuid
+  rabNodeId      String    @map("rab_node_id") @db.Uuid
+  quantity       Decimal   @db.Decimal // satuan item; CHECK > 0
+  unitPrice      BigInt    @map("unit_price") // CHECK >= 0
+  subtotal       BigInt? // = ROUND(quantity × unit_price), di-set trigger
+  notes          String?
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt      DateTime? @map("deleted_at") @db.Timestamptz
+  deletedBy      String?   @map("deleted_by") @db.Uuid
+
+  purchaseNote PurchaseNote @relation(fields: [purchaseNoteId], references: [id], onDelete: Cascade)
+  rabNode      RabNode      @relation(fields: [rabNodeId], references: [id], onDelete: Restrict)
+
+  @@index([purchaseNoteId], map: "purchase_lines_note_idx")
+  @@index([rabNodeId], map: "purchase_lines_rab_node_idx")
+  @@map("purchase_lines")
+}
+
+/// Riwayat progress per node (FR-RAB-7), ditulis di transaksi PATCH progress.
+model RabProgressLog {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  rabNodeId    String   @map("rab_node_id") @db.Uuid
+  oldProgress  Decimal  @map("old_progress") @db.Decimal
+  newProgress  Decimal  @map("new_progress") @db.Decimal
+  progressDate DateTime @map("progress_date") @db.Date
+  notes        String?
+  recordedBy   String?  @map("recorded_by") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  rabNode  RabNode @relation(fields: [rabNodeId], references: [id], onDelete: Cascade)
+  recorder User?   @relation(fields: [recordedBy], references: [id], onDelete: SetNull)
+
+  @@index([rabNodeId], map: "rab_progress_logs_rab_node_idx")
+  @@map("rab_progress_logs")
+}
+
+/// Snapshot progress harian per proyek → kurva S (FR-RAB-7).
+model ProjectProgressSnapshot {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId    String   @map("project_id") @db.Uuid
+  snapshotDate DateTime @map("snapshot_date") @db.Date
+  progress     Decimal  @db.Decimal
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, snapshotDate], map: "project_progress_snapshots_project_date_key")
+  @@map("project_progress_snapshots")
+}
+
+/// Snapshot versi RAB (FR-RAB-9) — permanen, tak ikut hapus aman.
+model RabVersion {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId      String   @map("project_id") @db.Uuid
+  versionNo      Int      @map("version_no")
+  snapshot       Json // pohon RAB saat ditetapkan
+  total          BigInt
+  reason         String?
+  addendumNumber String?  @map("addendum_number")
+  approvedBy     String?  @map("approved_by") @db.Uuid
+  approvedAt     DateTime @default(now()) @map("approved_at") @db.Timestamptz
+
+  project  Project @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  approver User?   @relation(fields: [approvedBy], references: [id], onDelete: SetNull)
+
+  @@unique([projectId, versionNo], map: "rab_versions_project_version_key")
+  @@map("rab_versions")
+}
+
+/// Addendum kontrak (FR-PRJ-5): projects.contract_value = nilai addendum terakhir.
+model ProjectAddendum {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId     String    @map("project_id") @db.Uuid
+  number        String
+  addendumDate  DateTime  @map("addendum_date") @db.Date
+  contractValue BigInt    @map("contract_value") // nilai kontrak baru (DPP)
+  reason        String
+  documentId    String?   @map("document_id") @db.Uuid
+  createdBy     String?   @map("created_by") @db.Uuid
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt     DateTime? @map("deleted_at") @db.Timestamptz
+  deletedBy     String?   @map("deleted_by") @db.Uuid
+
+  project  Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  document Document? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  creator  User?     @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+
+  @@index([projectId], map: "project_addenda_project_idx")
+  @@map("project_addenda")
+}
+
+/// Dokumen privat (FR-DOC-1/2/8). project_id opsional (tender sebelum proyek).
+model Document {
+  id         String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title      String
+  category   DocumentCategory
+  projectId  String?          @map("project_id") @db.Uuid
+  notes      String?
+  validUntil DateTime?        @map("valid_until") @db.Date // legalitas (FR-DOC-8)
+  uploadedBy String?          @map("uploaded_by") @db.Uuid
+  createdAt  DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt  DateTime?        @map("deleted_at") @db.Timestamptz
+  deletedBy  String?          @map("deleted_by") @db.Uuid
+
+  project        Project?          @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  uploader       User?             @relation(fields: [uploadedBy], references: [id], onDelete: SetNull)
+  files          DocumentFile[]
+  expenses       Expense[]
+  terminPayments TerminPayment[]
+  purchaseNotes  PurchaseNote[]
+  projectAddenda ProjectAddendum[]
+
+  @@index([projectId], map: "documents_project_idx")
+  @@map("documents")
+}
+
+/// Berkas fisik dokumen: disimpan di uploads/private/<id> (FR-DOC-2).
+model DocumentFile {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  documentId   String    @map("document_id") @db.Uuid
+  originalName String    @map("original_name")
+  mime         String
+  size         BigInt // byte; CHECK > 0
+  sha256       String
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  deletedAt    DateTime? @map("deleted_at") @db.Timestamptz
+  deletedBy    String?   @map("deleted_by") @db.Uuid
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId], map: "document_files_document_idx")
+  @@map("document_files")
+}
+
+/// Pengaturan aplikasi key → jsonb, mis. `stats_baseline` (FR-INT-1).
+model Setting {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  key       String   @unique
+  value     Json
+  updatedBy String?  @map("updated_by") @db.Uuid
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  updater User? @relation(fields: [updatedBy], references: [id], onDelete: SetNull)
+
+  @@map("settings")
+}

@@ -1,0 +1,48 @@
+# deploy/Caddyfile — Fase 4 WP-51 (master §8.1 proxy, §10 security headers).
+#
+# Caddy satu-satunya service yang terekspos keluar. Tiga hostname → tiga
+# upstream internal, plus volume uploads di-serve langsung dari disk (bukan
+# lewat API) supaya gambar portfolio tak membebani Node.
+#
+# Caddyfile DEV saja. Produksi/staging = Caddyfile.prod (tanpa :8080, tanpa ACME).
+# Blok `:8080` di bawah adalah SMOKE TEST HTTP lokal.
+
+{
+	# Email ACME. Domain *.localhost otomatis pakai TLS internal Caddy
+	# (self-signed), bukan Let's Encrypt — jadi default ini tak pernah dipakai
+	# di mesin dev.
+	email {$ACME_EMAIL:admin@example.com}
+}
+
+import /etc/caddy/common.caddy
+
+# ERP (apps/erp) — SPA statis + API satu origin (SRS §2.4 FE-2, FE-6).
+# Nama variabel WEB_DOMAIN dipertahankan dari stack lama: isinya domain ERP.
+{$WEB_DOMAIN} {
+	import erp
+}
+
+{$SITE_DOMAIN} {
+	import secure_headers
+	import uploads
+	reverse_proxy site:4321 {
+		header_up -CF-Connecting-IP
+	}
+}
+
+{$API_DOMAIN} {
+	import secure_headers
+	import uploads
+	reverse_proxy api:3001 {
+		header_up -CF-Connecting-IP
+	}
+}
+
+# Smoke test lokal — `curl -sI http://localhost:8080/health`.
+:8080 {
+	import secure_headers
+	import uploads
+	reverse_proxy api:3001 {
+		header_up -CF-Connecting-IP
+	}
+}

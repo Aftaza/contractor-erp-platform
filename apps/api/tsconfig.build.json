@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  // "scripts" & "prisma" WAJIB dikecualikan: dua file .ts di luar src/
+  // (scripts/generate-openapi.ts, prisma/seed.ts) melebarkan rootDir TS ke
+  // root proyek, sehingga output ternest jadi dist/src/main.js dan
+  // `node dist/main` (start:prod) rusak. Keduanya dijalankan lewat ts-node
+  // (lihat scripts di package.json), tak pernah dari hasil build.
+  // TS 6 tak lagi menebak rootDir — dikunci ke src agar output tetap dist/main.js.
+  // tsBuildInfoFile di dalam dist: nest deleteOutDir ikut menghapusnya; kalau di luar, build inkremental
+  // menganggap output sudah ada lalu diam-diam tak menulis dist/.
+  "compilerOptions": { "rootDir": "./src", "tsBuildInfoFile": "./dist/tsconfig.build.tsbuildinfo" },
+  "exclude": [
+    "node_modules",
+    "test",
+    "dist",
+    "scripts",
+    "prisma",
+    "**/*spec.ts"
+  ]
+}

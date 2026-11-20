@@ -1,0 +1,16 @@
+**/node_modules
+**/dist
+**/build
+**/.svelte-kit
+**/.astro
+**/coverage
+apps/api/uploads
+.git
+**/.env
+**/.env.*
+!**/.env.example
+**/*.dump
+**/*.sql.gz
+**/*.xlsx
+apps/web/prototype
+docs

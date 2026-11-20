@@ -1,0 +1,117 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+
+/* Token dari apps/erp/DESIGN.md. Mode terang saja. */
+:root {
+	--brand-red: #cc0000; /* hanya logo & indikator nav aktif */
+	--ink: #1f2933;
+	--ink-hover: #111418;
+	--text: #1f2933;
+	--text-muted: #5b636b;
+	--border: #d9dde1; /* dekoratif */
+	--border-strong: #7b848d; /* kontrol/input */
+	--surface: #ffffff;
+	--canvas: #f4f5f6;
+	--row-hover: #eef0f2;
+	--focus: #111418;
+	--success: #067647;
+	--success-tint: #ecfdf3;
+	--warning: #b54708;
+	--warning-tint: #fffaeb;
+	--danger: #b42318;
+	--danger-tint: #fef3f2;
+	--info: #175cd3;
+	--info-tint: #eff8ff;
+	--neutral: #475467;
+	--neutral-tint: #f2f4f7;
+
+	/* Nama token shadcn -> token DESIGN.md (komponen hasil CLI langsung benar) */
+	--background: var(--canvas);
+	--foreground: var(--text);
+	--card: var(--surface);
+	--card-foreground: var(--text);
+	--popover: var(--surface);
+	--popover-foreground: var(--text);
+	--primary: var(--ink);
+	--primary-foreground: var(--surface);
+	--secondary: var(--surface);
+	--secondary-foreground: var(--text);
+	--muted: var(--canvas);
+	--muted-foreground: var(--text-muted);
+	--accent: var(--row-hover);
+	--accent-foreground: var(--text);
+	--destructive: var(--danger);
+	--destructive-foreground: var(--surface);
+	--input: var(--border-strong);
+	--ring: var(--focus);
+}
+
+@theme inline {
+	--color-brand-red: var(--brand-red);
+	--color-ink: var(--ink);
+	--color-ink-hover: var(--ink-hover);
+	--color-text: var(--text);
+	--color-text-muted: var(--text-muted);
+	--color-border: var(--border);
+	--color-border-strong: var(--border-strong);
+	--color-surface: var(--surface);
+	--color-canvas: var(--canvas);
+	--color-row-hover: var(--row-hover);
+	--color-focus: var(--focus);
+	--color-success: var(--success);
+	--color-success-tint: var(--success-tint);
+	--color-warning: var(--warning);
+	--color-warning-tint: var(--warning-tint);
+	--color-danger: var(--danger);
+	--color-danger-tint: var(--danger-tint);
+	--color-info: var(--info);
+	--color-info-tint: var(--info-tint);
+	--color-neutral: var(--neutral);
+	--color-neutral-tint: var(--neutral-tint);
+
+	--color-background: var(--background);
+	--color-foreground: var(--foreground);
+	--color-card: var(--card);
+	--color-card-foreground: var(--card-foreground);
+	--color-popover: var(--popover);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-primary: var(--primary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-secondary: var(--secondary);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-muted: var(--muted);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-accent: var(--accent);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-destructive: var(--destructive);
+	--color-destructive-foreground: var(--destructive-foreground);
+	--color-input: var(--input);
+	--color-ring: var(--ring);
+
+	--font-sans: 'Inter Variable', system-ui, sans-serif;
+	--radius-sm: 4px;
+	--radius-md: 6px;
+	--radius-lg: 8px;
+
+	/* Navigasi: < 720 bottom bar · 720–1023 sidebar ciut · ≥ 1024 sidebar penuh */
+	--breakpoint-md: 45rem; /* 720px */
+	--breakpoint-lg: 64rem; /* 1024px */
+
+	--shadow-popover: 0 4px 12px rgb(17 20 24 / 0.12);
+	--shadow-dialog: 0 12px 32px rgb(17 20 24 / 0.18);
+}
+
+@layer base {
+	body {
+		background: var(--canvas);
+		color: var(--text);
+		font-family: var(--font-sans);
+		font-variant-numeric: tabular-nums;
+		font-size: 0.9375rem; /* root tetap 16px: h-11 = 44px, input HP text-base = 16px */
+		line-height: 1.5;
+	}
+	:focus-visible {
+		outline: 2px solid var(--focus);
+		outline-offset: 2px;
+	}
+}

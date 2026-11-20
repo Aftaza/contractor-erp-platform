@@ -1,0 +1,23 @@
+name: branch-guard
+
+on:
+  pull_request:
+    branches: [main, staging]
+    types: [opened, synchronize, reopened, edited]
+
+permissions: {}
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Cek branch asal (SRS BR-5)
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+        run: |
+          case "$BASE:$HEAD" in
+            main:staging|main:hotfix/*|staging:dev|staging:main|staging:hotfix/*) ;;
+            *) echo "::error::PR ke '$BASE' tidak boleh dari '$HEAD' (BR-5)"; exit 1 ;;
+          esac

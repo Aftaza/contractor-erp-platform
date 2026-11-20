@@ -1,0 +1,148 @@
+# Produksi (compose project `acme`) — SRS §2.6 INF-1..9, ENV-3. Jalankan DARI VPS, tanpa build (INF-6):
+#   docker compose -f deploy/compose.prod.yml --env-file .env pull
+#   # migrasi = langkah terpisah dengan role DDL (R-010b; deploy.sh = W4-04):
+#   (lihat deploy/README.md: migrate dengan DATABASE_URL=$MIGRATE_DATABASE_URL, lalu init-roles.sh ulang)
+#   docker compose -f deploy/compose.prod.yml --env-file .env up -d
+# Tanpa `site` (situs statis di Cloudflare Pages) dan TANPA `ports:` — masuk hanya lewat cloudflared.
+# Jaringan bersubnet tetap supaya AUDIT_TRUSTED_PROXY_IPS & trusted_proxies Caddy stabil (R-008).
+# Nilai `<owner>` dan domain = B-001 (isi di .env; domain hanya dipakai di dashboard Tunnel).
+name: acme
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    mem_limit: 1g
+    logging: *logging
+    command: ["postgres", "-c", "shared_buffers=512MB", "-c", "max_connections=50"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?wajib}
+      POSTGRES_DB: acme
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?wajib}
+      MIGRATE_DB_PASSWORD: ${MIGRATE_DB_PASSWORD:?wajib}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./db/init-roles.sh:/docker-entrypoint-initdb.d/init-roles.sh:ro
+      - ./db/roles.sql:/db/roles.sql:ro
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d acme"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    image: ghcr.io/${GHCR_OWNER:?isi <owner>}/acme-api:${IMAGE_TAG:?wajib}
+    restart: unless-stopped
+    mem_limit: 512m
+    logging: *logging
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql://acme_app:${APP_DB_PASSWORD}@db:5432/acme?schema=public
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?wajib}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?wajib}
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=384
+      PORT: "3001"
+      UPLOADS_DIR: /app/uploads
+      # Subnet jaringan internal: satu-satunya peer yang bisa menjangkau api adalah proxy.
+      AUDIT_TRUSTED_PROXY_IPS: 172.30.0.10
+    volumes:
+      - uploads_data:/app/uploads
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  proxy:
+    image: ghcr.io/${GHCR_OWNER}/acme-proxy:${IMAGE_TAG}
+    # Hanya dipakai CI (`docker compose build proxy`); VPS tidak build (INF-6).
+    build:
+      context: ..
+      dockerfile: deploy/proxy/Dockerfile
+      args:
+        APP_ENV: production
+        APP_VERSION: ${IMAGE_TAG}
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *logging
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile.prod", "--adapter", "caddyfile"]
+    depends_on:
+      api: { condition: service_healthy }
+    environment:
+      CLOUDFLARED_IP: 172.30.1.10
+    volumes:
+      - uploads_data:/srv/uploads:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      internal:
+        ipv4_address: 172.30.0.10
+      edge:
+        # alias dipakai tunnel: service URL http://acme-proxy:80
+        aliases: [acme-proxy]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    mem_limit: 256m
+    logging: *logging
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql://acme_app:${APP_DB_PASSWORD}@db:5432/acme?schema=public
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
+    volumes:
+      - ./backup/backup.sh:/scripts/backup.sh:ro
+      - ./backup/restore.sh:/scripts/restore.sh:ro
+      - backup_data:/backups
+    # shortcut: loop harian pg_dump lokal; diganti restic -> B2 di W4-03 (BCK-1..8).
+    entrypoint: ["sh", "-c", "while true; do sh /scripts/backup.sh; sleep 86400; done"]
+    networks: [internal]
+
+  cloudflared:
+    image: cloudflare/cloudflared:2025.11.1
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *logging
+    # shortcut: tanpa healthcheck, image tak di-pin digest, backup memakai acme_app (bukan role read-only);
+    # dirapikan di W4-03/W4-05.
+    # Hostname publik diatur di dashboard Tunnel: erp.<domain> -> http://acme-proxy:80,
+    # erp-staging.<domain> -> http://acme-staging-proxy:80 (INF-2). Tak ada api.<domain>.
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?wajib}
+    networks:
+      edge:
+        ipv4_address: 172.30.1.10
+
+networks:
+  internal:
+    name: acme_internal
+    # ip_range: alamat statis (.10) di luar rentang alokasi dinamis
+    ipam: { config: [{ subnet: 172.30.0.0/24, ip_range: 172.30.0.128/25 }] }
+  # Dipakai juga staging (external) agar cloudflared produksi menjangkau proxy staging.
+  edge:
+    name: acme_edge
+    ipam: { config: [{ subnet: 172.30.1.0/24, ip_range: 172.30.1.128/25 }] }
+
+volumes:
+  db_data:
+  uploads_data:
+  backup_data:
+  caddy_data:
+  caddy_config:

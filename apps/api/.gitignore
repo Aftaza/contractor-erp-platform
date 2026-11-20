@@ -1,0 +1,67 @@
+# compiled output
+/dist
+/node_modules
+/build
+
+# uploads lokal (WP-21, fase-3-pelaporan-publikasi.md §2.7) — foto portfolio, tak dicommit.
+#
+# GARIS MIRING DEPAN WAJIB. Pola `uploads/` tanpa jangkar cocok dengan
+# direktori bernama `uploads` di KEDALAMAN MANA PUN — termasuk
+# `src/uploads/`, folder source modul WP-21. Akibatnya 7 file
+# (uploads.service.ts, upload-filename.util.ts, uploads.controller.ts, dua
+# spec, dan dto/) diam-diam tak pernah masuk version control dan ikut hilang
+# dari commit b5978e8; clone baru tak bisa dikompilasi. Ditemukan &
+# diperbaiki integrator Fase 4.
+/uploads/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# OS
+.DS_Store
+
+# Tests
+/coverage
+/.nyc_output
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# temp directory
+.temp
+.tmp
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Diagnostic reports (https://nodejs.org/api/report.html)
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json

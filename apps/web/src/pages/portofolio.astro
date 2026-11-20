@@ -1,0 +1,19 @@
+---
+import Layout from '../layouts/Layout.astro';
+import PortfolioPageContent from '../islands/PortfolioPageContent';
+import { allProjects } from '../data/projects';
+import { fetchPublicProjects } from '../lib/public-projects';
+
+// Situs statis penuh (SRS §2.6): data ERP diambil SAAT BUILD. `fetchPublicProjects()`
+// mengembalikan [] bila API mati, jadi build tak pernah gagal dan halaman tak pernah kosong.
+
+const erpProjects = await fetchPublicProjects();
+const projects = [...erpProjects, ...allProjects];
+---
+
+<Layout
+  title="Portofolio — PT Acme Konstruksi"
+  description="Proyek konstruksi Acme: mekanikal PT Industri Semen Contoh, infrastruktur BUMN Karya Contoh, fabrikasi PT Agro Contoh, dan puluhan proyek industri lainnya."
+>
+  <PortfolioPageContent projects={projects} client:visible />
+</Layout>

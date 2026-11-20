@@ -1,0 +1,53 @@
+---
+import { getImage } from 'astro:assets';
+import Layout from '../layouts/Layout.astro';
+import HomePageContent from '../islands/HomePageContent';
+
+// Contoh/anonim: foto stok Unsplash (lihat assets/placeholder/SUMBER.md) dan logo klien fiktif.
+import mekanikalImg from '../assets/placeholder/layanan-mekanikal.webp';
+import fabrikasiImg from '../assets/placeholder/layanan-fabrikasi.webp';
+import sipilImg     from '../assets/placeholder/layanan-sipil.webp';
+
+import semenLogo   from '../assets/klien-contoh/semen.png';
+import listrikLogo from '../assets/klien-contoh/listrik.png';
+import karyaLogo   from '../assets/klien-contoh/karya.png';
+import gasLogo     from '../assets/klien-contoh/gas.png';
+import agroLogo    from '../assets/klien-contoh/agro.png';
+import pemkabLogo  from '../assets/klien-contoh/pemkab.png';
+
+const PROJECT_OPT = { width: 600, format: 'webp' as const, quality: 80 };
+const LOGO_OPT    = { width: 160, format: 'webp' as const };
+
+const [ndt, net, bridge, semen, listrik, karya, gas, agro, pemkab] = await Promise.all([
+  getImage({ src: mekanikalImg, ...PROJECT_OPT }),
+  getImage({ src: fabrikasiImg, ...PROJECT_OPT }),
+  getImage({ src: sipilImg,     ...PROJECT_OPT }),
+  getImage({ src: semenLogo,    ...LOGO_OPT }),
+  getImage({ src: listrikLogo,  ...LOGO_OPT }),
+  getImage({ src: karyaLogo,    ...LOGO_OPT }),
+  getImage({ src: gasLogo,      ...LOGO_OPT }),
+  getImage({ src: agroLogo,     ...LOGO_OPT }),
+  getImage({ src: pemkabLogo,   ...LOGO_OPT }),
+]);
+
+const projectImages = { ndt: ndt.src, net: net.src, bridge: bridge.src };
+
+const clientLogos = [
+  { src: semen.src,   name: 'PT Industri Semen Contoh' },
+  { src: listrik.src, name: 'Pembangkit Listrik Contoh' },
+  { src: karya.src,   name: 'BUMN Karya Contoh' },
+  { src: gas.src,     name: 'Gas Nusantara Contoh' },
+  { src: agro.src,    name: 'PT Agro Contoh' },
+  { src: pemkab.src,  name: 'Pemerintah Kabupaten Contoh' },
+];
+---
+
+<Layout
+  title="PT Acme Konstruksi — Kontraktor Mekanikal, Sipil & Elektrikal"
+  description="Contoh company profile kontraktor mekanikal, sipil, elektrikal & supplier."
+>
+  <HomePageContent
+    projectImages={projectImages}
+    clientLogos={clientLogos}
+  />
+</Layout>

@@ -1,0 +1,181 @@
+name: ci
+
+on:
+  pull_request:
+    branches: [dev, staging, main]
+  push:
+    branches: [dev]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  NODE_VERSION: 24 # npm 11 (allowScripts), sama dengan lokal
+
+jobs:
+  # Filter path per app. Job `ci` di bawah tetap selalu jalan agar bisa jadi required check.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      api: ${{ steps.f.outputs.api }}
+      erp: ${{ steps.f.outputs.erp }}
+      web: ${{ steps.f.outputs.web }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: f
+        with:
+          base: ${{ github.ref_name }}
+          filters: |
+            shared: &shared
+              - 'package.json'
+              - 'package-lock.json'
+              - '.npmrc'
+              - '.github/workflows/ci.yml'
+            api:
+              - *shared
+              - 'apps/api/**'
+              - 'packages/**'
+              - 'docs/reference/template-rab-acme.xlsx'
+            erp:
+              - *shared
+              - 'apps/erp/**'
+              - 'packages/**'
+            web:
+              - *shared
+              - 'apps/web/**'
+
+  api:
+    needs: changes
+    if: needs.changes.outputs.api == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: acme_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U test" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://test:test@localhost:5432/acme_test?schema=public
+      JWT_ACCESS_SECRET: ci-access-secret-minimal-16-karakter
+      JWT_REFRESH_SECRET: ci-refresh-secret-minimal-16-karakter
+      NODE_ENV: test
+      PORT: 3001
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+        working-directory: .
+      - run: npx prisma generate
+      - name: Lint (mode cek)
+        run: npx eslint "{src,test}/**/*.ts"
+      - name: Typecheck (build)
+        run: npm run build
+      - run: npm test
+      - run: npm run test:e2e
+      - name: Kontrak OpenAPI
+        run: npm run check:openapi
+      - name: Terapkan migrasi
+        run: npx prisma migrate deploy
+      - run: npm run test:db
+      - name: Drift skema vs migrasi
+        env:
+          PGPASSWORD: test
+        # shortcut: shadow DB = DB kosong di service yang sama, cukup selama satu job memakai server ini.
+        run: |
+          createdb -h localhost -U test acme_shadow
+          npx prisma migrate diff --exit-code \
+          --from-migrations prisma/migrations \
+          --to-schema-datamodel prisma/schema.prisma \
+          --shadow-database-url "postgresql://test:test@localhost:5432/acme_shadow?schema=public"
+      - name: Sinkron openapi.json + packages/api-types
+        working-directory: .
+        run: |
+          npm run gen:api-types
+          git diff --exit-code -- apps/api/openapi.json packages/api-types
+          test -z "$(git status --porcelain -- apps/api/openapi.json packages/api-types)"
+
+  erp:
+    needs: changes
+    if: needs.changes.outputs.erp == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run lint -w @acme/erp
+      - run: npm run check -w @acme/erp
+      - run: npm test -w @acme/erp
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Pasang Chromium Playwright
+        working-directory: apps/erp
+        timeout-minutes: 5
+        # Tanpa --with-deps: apt runner bisa gagal DNS lalu menggantung (B-005);
+        # image ubuntu-latest sudah memuat pustaka sistem Chrome.
+        run: npx playwright install chromium
+      - run: npx playwright test
+        working-directory: apps/erp
+
+  web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run check -w @acme/web
+      - run: npm test -w @acme/web
+      - run: npm run build -w @acme/web
+
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm audit --omit=dev --audit-level=high
+
+  # Satu check agregat untuk ruleset (BR-5, CI-1). Job yang di-skip filter dianggap lulus.
+  ci:
+    if: always()
+    needs: [changes, api, erp, web, audit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Semua job harus sukses atau di-skip
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1

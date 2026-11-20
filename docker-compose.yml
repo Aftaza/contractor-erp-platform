@@ -1,0 +1,131 @@
+# docker-compose.yml — platform Acme (monorepo). Jalankan dari root.
+# 5 service: db, api, site (apps/web, Astro), proxy (Caddy), backup. HANYA `proxy` publish port.
+# ERP (apps/erp) tidak punya container: build statisnya dibake ke image `proxy` (SRS §2.4).
+# Edit deploy/Caddyfile atau ERP => `docker compose build proxy` (tak lagi bind-mount).
+# Podman di mesin dev: `podman compose config` / `podman compose up -d`.
+#
+# Rahasia (POSTGRES_PASSWORD, JWT_*) dibaca dari `.env` di root — TIDAK di-commit
+# (lihat .env.example). Domain default `*.localhost` → Caddy memakai TLS internal
+# (self-signed), bukan ACME — aman untuk mesin dev (deploy/Caddyfile).
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD wajib diisi di .env}
+      POSTGRES_DB: ${POSTGRES_DB:-acme}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-acme}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    # Dev: auto-migrasi saat start; image sendiri tidak migrasi (produksi = langkah deploy).
+    command: ["sh", "-c", "npx prisma migrate deploy && node dist/main"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD wajib diisi di .env}@db:5432/${POSTGRES_DB:-acme}?schema=public
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET wajib diisi di .env}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET wajib diisi di .env}
+      NODE_ENV: production
+      PORT: "3001"
+      UPLOADS_DIR: /app/uploads
+    volumes:
+      - uploads_data:/app/uploads
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  site:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      PUBLIC_API_BASE_URL: http://api:3001/api/v1
+      # Origin publik tempat gambar upload dirender di browser — HARUS domain
+      # yang bisa dijangkau klien (proxy/API_DOMAIN), bukan nama service
+      # internal "api". Default cocok dengan blok smoke test :8080 Caddyfile.
+      PUBLIC_UPLOADS_ORIGIN: ${PUBLIC_UPLOADS_ORIGIN:-http://localhost:8080}
+      HOST: "0.0.0.0"
+      PORT: "4321"
+    healthcheck:
+      # 127.0.0.1, bukan localhost: /etc/hosts compose memuat `::1 localhost` dan
+      # wget busybox memilih IPv6 lalu gagal "Connection refused".
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4321/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  proxy:
+    build:
+      context: .
+      dockerfile: deploy/proxy/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      site:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      # Smoke test HTTP lokal — lihat deploy/Caddyfile blok :8080. Port HOST-nya
+      # bisa digeser lewat SMOKE_HTTP_PORT: 8080 sering sudah dipakai proses
+      # lain di mesin dev, dan bentrok di sini menggagalkan `proxy` publish
+      # sehingga seluruh `up` gagal. Port DALAM container tetap 8080.
+      - "${SMOKE_HTTP_PORT:-8080}:8080"
+    environment:
+      WEB_DOMAIN: ${WEB_DOMAIN:-web.localhost}
+      SITE_DOMAIN: ${SITE_DOMAIN:-site.localhost}
+      API_DOMAIN: ${API_DOMAIN:-api.localhost}
+    volumes:
+      - uploads_data:/srv/uploads:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD wajib diisi di .env}@db:5432/${POSTGRES_DB:-acme}?schema=public
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
+    volumes:
+      - ./deploy/backup/backup.sh:/scripts/backup.sh:ro
+      # restore.sh ikut di-mount: uji restore (master §10) dijalankan DARI
+      # container ini, dan runbook deploy/README.md memanggilnya di sini.
+      # Tanpa baris ini `sh /scripts/restore.sh` gagal "No such file".
+      - ./deploy/backup/restore.sh:/scripts/restore.sh:ro
+      - backup_data:/backups
+    # ponytail: loop shell sekali/hari, bukan cron sungguhan — retensi N hari
+    # (master §10) sudah tercapai lewat backup.sh sendiri. Upgrade ke
+    # cron/ofelia hanya kalau perlu jadwal lebih rapat dari harian.
+    entrypoint: ["sh", "-c", "while true; do sh /scripts/backup.sh; sleep 86400; done"]
+
+volumes:
+  db_data:
+  uploads_data:
+  backup_data:
+  caddy_data:
+  caddy_config:

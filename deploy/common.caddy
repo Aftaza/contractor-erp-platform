@@ -1,0 +1,70 @@
+# Snippet bersama Caddyfile (dev) dan Caddyfile.prod (produksi/staging).
+
+(secure_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		# ponytail: 'unsafe-inline' untuk script & style karena Next.js dan
+		# Astro menyuntik inline hydration tanpa nonce. Ceiling yang disadari;
+		# upgrade ke CSP berbasis nonce menuntut middleware di kedua app,
+		# bukan perubahan proxy. frame-ancestors 'none' menutup clickjacking,
+		# yang merupakan risiko nyata di sini.
+		Content-Security-Policy "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Jangan iklankan server maupun framework. `X-Powered-By: Express`
+		# benar-benar muncul di response /health saat diukur — Nest berjalan
+		# di atas Express dan menyetelnya sendiri. Dibuang di proxy supaya
+		# berlaku untuk ketiga upstream sekaligus.
+		-Server
+		-X-Powered-By
+	}
+}
+
+# Header khusus domain ERP (INF-7).
+(noindex) {
+	header X-Robots-Tag "noindex, nofollow"
+}
+
+# Uploads di-serve dari volume bersama, read-only. `handle_path` MEMBUANG
+# prefix /uploads, jadi /uploads/foo.jpg → /srv/uploads/foo.jpg.
+(uploads) {
+	# SRS §3.9: dokumen privat tak pernah disajikan statis (hanya lewat API ber-auth).
+	# shortcut: deny-list /uploads/private, bukan allow-list /uploads/public — API
+	# masih menulis upload situs datar di /uploads/<file>; ganti ke allow-list
+	# saat modul dokumen memindahkan upload publik ke /uploads/public.
+	handle /uploads/private/* {
+		respond 404
+	}
+	handle_path /uploads/* {
+		root * /srv/uploads
+		file_server
+		header Cache-Control "public, max-age=86400"
+	}
+}
+
+# ERP: SPA statis + API satu origin (SRS §2.4 FE-2, FE-6). R-008: header
+# CF-Connecting-IP dari klien SELALU ditimpa dengan {client_ip} — nilai itu hanya
+# memercayai header dari peer di `trusted_proxies` (cloudflared; kosong di dev).
+(erp) {
+	import secure_headers
+	import noindex
+	import uploads
+	encode zstd gzip
+	handle /api/* {
+		reverse_proxy api:3001 {
+			header_up CF-Connecting-IP {client_ip}
+			header_up X-Forwarded-For {client_ip}
+		}
+	}
+	handle {
+		root * /srv/erp
+		@immutable path /_app/immutable/*
+		@mutable not path /_app/immutable/*
+		header @immutable Cache-Control "public, max-age=31536000, immutable"
+		header @mutable Cache-Control "no-cache"
+		try_files {path} /200.html
+		file_server
+	}
+}
